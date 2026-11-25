@@ -18,7 +18,7 @@ from typing import Dict, Optional
 # ---------------------------------------------------------------------------
 
 # Maximum number of agent turns per case before forcing termination.
-MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "50"))
+MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "12"))
 
 # Optional retrieval server (used when the agent runs against a local index).
 RETRIEVAL_SERVER_URL: str = os.environ.get(
@@ -164,7 +164,7 @@ class ModelSpec:
     """Static metadata describing one supported model variant."""
 
     name: str
-    family: str  # "qwen3_vl_dense" | "qwen3_vl_moe" | "claude" | "minimax"
+    family: str  # "qwen3_vl_dense" | "qwen3_vl_moe" | "claude" | "minimax" | "anthropic"
     display_name: str
     default_checkpoint_env: Optional[str] = None
     default_checkpoint: str = ""
@@ -242,6 +242,38 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             "thinking": "always_on",
             "legacy": "true",
         },
+    ),
+    # --- added for the e-commerce adaptation ------------------------------
+    # Small student model that is fine-tuned (set QWEN3VL_2B_PATH to a local
+    # checkpoint, e.g. the merged SFT output, or leave unset to use the hub id).
+    "2b": ModelSpec(
+        name="2b",
+        family="qwen3_vl_dense",
+        display_name="Qwen3-VL-2B-Instruct",
+        default_checkpoint_env="QWEN3VL_2B_PATH",
+        default_checkpoint="Qwen/Qwen3-VL-2B-Instruct",
+    ),
+    # Teacher models through the public Anthropic API (ANTHROPIC_API_KEY).
+    "claude-sonnet": ModelSpec(
+        name="claude-sonnet",
+        family="anthropic",
+        display_name="claude-sonnet-5-5",
+        supports_multi_gpu=False,
+        extra={"api_model": "claude-sonnet-5-5", "max_output_tokens": "4096"},
+    ),
+    "claude-haiku": ModelSpec(
+        name="claude-haiku",
+        family="anthropic",
+        display_name="claude-haiku-5-5",
+        supports_multi_gpu=False,
+        extra={"api_model": "claude-haiku-5-5", "max_output_tokens": "4096"},
+    ),
+    "claude-opus": ModelSpec(
+        name="claude-opus",
+        family="anthropic",
+        display_name="claude-opus-5-5",
+        supports_multi_gpu=False,
+        extra={"api_model": "claude-opus-5-5", "max_output_tokens": "4096"},
     ),
 }
 

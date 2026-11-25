@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import auth, config, messages
+from . import anthropic_client, auth, config, messages
 from .config import ModelSpec
 
 
@@ -276,6 +276,113 @@ class MiniMaxRunner(BaseRunner):
                         "role": "model",
                         "parts": text_parts or [{"text": ""}],
                     },
+                    "finishReason": finish,
+                }
+            ],
+            "usageMetadata": usage_metadata,
+            "modelVersion": self.display_name,
+            "raw_response": response_json,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Anthropic (public Messages API) - teacher model for trajectory generation
+# ---------------------------------------------------------------------------
+
+
+class AnthropicRunner(BaseRunner):
+    """Drives the public Anthropic Messages API (``ANTHROPIC_API_KEY``)."""
+
+    # Each assistant turn is cut after its first tool call, so a turn can never
+    # contain two tool calls or an invented tool result.
+    TOOL_CALL_END = "</tool_call>"
+
+    def __init__(self, spec: ModelSpec) -> None:
+        super().__init__(spec)
+        self.client: Optional[anthropic_client.AnthropicClient] = None
+
+    @property
+    def api_model(self) -> str:
+        return self.spec.extra.get("api_model", self.spec.display_name)
+
+    def load(self) -> None:
+        self.client = anthropic_client.AnthropicClient.from_env()
+
+    def infer(
+        self,
+        contents: Iterable[Dict[str, Any]],
+        system_instruction: Optional[str] = None,
+        cfg: Optional[InferenceConfig] = None,
+    ) -> Dict[str, Any]:
+        cfg = cfg or InferenceConfig()
+        if self.client is None:
+            try:
+                self.load()
+            except Exception as exc:
+                return _empty_response(self.display_name, str(exc))
+
+        per_turn_cap = int(self.spec.extra.get("max_output_tokens", "4096"))
+        max_tokens = min(cfg.max_tokens, per_turn_cap)
+        try:
+            api_messages = messages.to_minimax_messages(contents)
+            response = self.client.call(  # type: ignore[union-attr]
+                model=self.api_model,
+                messages=api_messages,
+                system_instruction=system_instruction,
+                max_tokens=max_tokens,
+                temperature=cfg.temperature,
+                stop_sequences=["<observation>"],
+            )
+        except Exception as exc:
+            logger.error("Anthropic inference failed: %s", exc)
+            return _empty_response(self.display_name, str(exc))
+
+        try:
+            response_json = response.json()
+        except ValueError as exc:
+            return _empty_response(self.display_name, f"Invalid JSON: {exc}")
+
+        if response_json.get("type") == "error":
+            error = response_json.get("error", {}) or {}
+            return _empty_response(
+                self.display_name, error.get("message", "Unknown error")
+            )
+
+        text = "".join(
+            item.get("text", "")
+            for item in (response_json.get("content", []) or [])
+            if item.get("type") == "text"
+        )
+        cut = text.find(self.TOOL_CALL_END)
+        if cut != -1:
+            text = text[: cut + len(self.TOOL_CALL_END)]
+        text = text.strip()
+
+        stop = response_json.get("stop_reason") or "STOP"
+        finish = {"end_turn": "STOP", "stop_sequence": "STOP", "max_tokens": "MAX_TOKENS"}.get(
+            stop, stop
+        )
+
+        usage = response_json.get("usage", {}) or {}
+        fresh = usage.get("input_tokens", 0)
+        cache_write = usage.get("cache_creation_input_tokens", 0) or 0
+        cache_read = usage.get("cache_read_input_tokens", 0) or 0
+        output = usage.get("output_tokens", 0)
+        usage_metadata = {
+            "promptTokenCount": fresh + cache_write + cache_read,
+            "candidatesTokenCount": output,
+            "totalTokenCount": fresh + cache_write + cache_read + output,
+            "cachedContentTokenCount": cache_read,
+            "cacheCreationTokenCount": cache_write,
+        }
+
+        # ``minimax_block`` is the key messages.to_minimax_messages() replays
+        # verbatim on the next turn; the block format is the Anthropic one.
+        part = {"minimax_block": {"type": "text", "text": text}, "text": text}
+        return {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [part]},
                     "finishReason": finish,
                 }
             ],
@@ -731,6 +838,8 @@ def build_runner(
         return ClaudeRunner(spec)
     if spec.family == "minimax":
         return MiniMaxRunner(spec)
+    if spec.family == "anthropic":
+        return AnthropicRunner(spec)
     return Qwen3VLRunner(
         spec,
         checkpoint=config.resolve_checkpoint(spec, checkpoint),
