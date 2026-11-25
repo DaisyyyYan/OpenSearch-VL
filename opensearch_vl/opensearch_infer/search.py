@@ -1,6 +1,14 @@
 """Search and document-parsing helpers used by the agent's tools.
 
-Two providers are supported for ``text_search``:
+Search backend (``SEARCH_BACKEND`` environment variable):
+
+* ``offline`` (default): ``text_search`` retrieves passages from a frozen local
+  product-catalog / policy corpus (see ``offline_kb.py``) and ``image_search``
+  passes the visual lookup result through unchanged. No network access and no
+  summarisation model are needed, and results are identical on every run.
+* ``web``: the original behaviour described below.
+
+Two providers are supported for the ``web`` backend of ``text_search``:
 
 1. **Gateway mode** (``API_HOST`` + ``API_USER`` + ``API_KEY``): a single
    gateway proxies Serper and Jina behind one HMAC credential.
@@ -27,9 +35,18 @@ from typing import Callable, Dict, List, Optional
 import requests
 
 from . import config
+from . import offline_kb
 
 
 logger = logging.getLogger(__name__)
+
+# "offline" (default) searches the local corpus; "web" restores the original
+# Serper + Jina + Qwen behaviour.
+SEARCH_BACKEND: str = os.environ.get("SEARCH_BACKEND", "offline").strip().lower()
+
+
+def _offline_enabled() -> bool:
+    return SEARCH_BACKEND != "web"
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +190,10 @@ def summarize_with_qwen(content: str, query: str, title: str) -> str:
 
 def summarize_image_search(result_obj: object) -> object:
     """Reduce a raw image-search payload to ``{title, source}`` records."""
+
+    if _offline_enabled():
+        # The local lookup already returns ``{title, source}`` records.
+        return result_obj
 
     try:
         result_str = json.dumps(result_obj, ensure_ascii=False, indent=2)
@@ -343,6 +364,15 @@ def _read_via_jina(url: str) -> str:
 
 
 def text_search(query: str, lang: str = "en", top_k: int = 5) -> str:
+    """Search the knowledge base (offline) or the web, depending on the backend."""
+
+    if _offline_enabled():
+        # ``lang`` is unused offline: the corpus is English-only.
+        return offline_kb.text_search(query, top_k=top_k)
+    return _text_search_web(query, lang=lang, top_k=top_k)
+
+
+def _text_search_web(query: str, lang: str = "en", top_k: int = 5) -> str:
     """Run a Serper search, fetch each page through Jina and summarise."""
 
     use_gateway = config.gateway_enabled()
@@ -403,8 +433,9 @@ def image_search(
         return (
             "Tool execution error:\n"
             "image_search requires a visual lookup callable. Configure one via "
-            "the runner (e.g. an external lens / similar-image API) before "
-            "invoking image_search."
+            "the runner (the local catalog image matcher, or an external "
+            "similar-image API when SEARCH_BACKEND=web) before invoking "
+            "image_search."
         )
 
     last_error: Optional[Exception] = None
