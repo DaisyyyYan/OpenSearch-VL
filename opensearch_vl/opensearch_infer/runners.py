@@ -330,7 +330,7 @@ class AnthropicRunner(BaseRunner):
                 messages=api_messages,
                 system_instruction=system_instruction,
                 max_tokens=max_tokens,
-                temperature=cfg.temperature,
+                temperature=None,  # deprecated for current Claude models
                 stop_sequences=["<observation>"],
             )
         except Exception as exc:
