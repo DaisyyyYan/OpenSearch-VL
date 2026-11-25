@@ -7,11 +7,11 @@ import json
 import logging
 import os
 import re
+import tempfile
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from . import cos_upload
 from . import image_io
 from . import search
 from .image_engines import ImageEnhancementEngine, ImageToolEngine
@@ -92,9 +92,8 @@ def get_tools_definition() -> str:
             "function": {
                 "name": "web_search",
                 "description": (
-                    "Perform a web search query to retrieve up-to-date "
-                    "information. Implemented as Serper + Jina + Qwen "
-                    "summarization (same backbone as text_search)."
+                    "Search the store's product catalog and policy "
+                    "knowledge base. Alias of text_search."
                 ),
                 "parameters": {
                     "type": "object",
@@ -111,8 +110,9 @@ def get_tools_definition() -> str:
             "function": {
                 "name": "image_search",
                 "description": (
-                    "Visually identify the contents of an image. Returns "
-                    "summarized title/source pairs filtered by Qwen3-32B."
+                    "Identify which catalog product appears in an image. "
+                    "Returns the most visually similar catalog products as "
+                    "title/source pairs."
                 ),
                 "parameters": {
                     "type": "object",
@@ -134,8 +134,9 @@ def get_tools_definition() -> str:
             "function": {
                 "name": "text_search",
                 "description": (
-                    "Search for text documents using Serper + Jina + Qwen "
-                    "summarization. Use for entity / fact lookups."
+                    "Search the store's product catalog and policy "
+                    "documents. Use for price, specification, seller, "
+                    "authentication-guide and return/refund policy lookups."
                 ),
                 "parameters": {
                     "type": "object",
@@ -357,24 +358,18 @@ def _resolve_image_for_search(
             and len(image_data) < 500
             and os.path.exists(image_data)
         ):
-            with open(image_data, "rb") as fh:
-                pil_img = Image.open(io.BytesIO(fh.read()))
-            url = cos_upload.upload_pil_image(
-                pil_img, filename_prefix, case_idx, turn_num, "image_search"
-            )
-            return (url, None) if url else (
-                None,
-                "Failed to upload local image to COS for image_search.",
-            )
+            # Offline mode: hand the local file path straight to the lookup
+            # callable instead of uploading it to cloud storage.
+            return os.path.abspath(image_data), None
         if isinstance(image_data, bytes):
+            # Offline mode: write the bytes to a temporary PNG and pass its path.
             pil_img = Image.open(io.BytesIO(image_data))
-            url = cos_upload.upload_pil_image(
-                pil_img, filename_prefix, case_idx, turn_num, "image_search"
+            tmp_dir = tempfile.mkdtemp(prefix="image_search_")
+            tmp_path = os.path.join(
+                tmp_dir, f"{filename_prefix}_{case_idx}_turn{turn_num}.png"
             )
-            return (url, None) if url else (
-                None,
-                "Failed to upload image bytes to COS for image_search.",
-            )
+            pil_img.save(tmp_path)
+            return tmp_path, None
         return None, f"Unsupported image data type for {target_ref!r}"
 
     if image_url:
@@ -401,7 +396,7 @@ def _persist_new_image(
     tool_name: str,
     image_paths_dict: dict,
 ) -> Tuple[str, str]:
-    """Persist a freshly produced image and return ``(image_id, url_or_path)``."""
+    """Persist a freshly produced image and return ``(image_id, local_path)``."""
 
     os.makedirs(intermediate_dir, exist_ok=True)
     new_id = f"img_{len(image_paths_dict) + 1}"
@@ -410,15 +405,7 @@ def _persist_new_image(
         f"{filename_prefix}_{case_idx}_trajectory_turn{turn_num}_{tool_name}.png",
     )
     pil_image.save(save_path)
-
-    cos_url = cos_upload.upload_pil_image(
-        pil_image,
-        filename_prefix,
-        case_idx,
-        turn_num,
-        tool_name,
-    )
-    return new_id, cos_url or save_path
+    return new_id, save_path
 
 
 def execute_tool(
@@ -504,10 +491,7 @@ def execute_tool(
             "crop",
             image_paths_dict,
         )
-        msg = (
-            f"Image cropped successfully. New image ID: {new_id}. "
-            f"Available at: {location}"
-        )
+        msg = f"Image cropped successfully. New image ID: {new_id}."
         return msg, {new_id: location}
 
     if name == "layout_parsing":
@@ -606,9 +590,7 @@ def execute_tool(
             name,
             image_paths_dict,
         )
-        msg = (
-            f"{name} succeeded. New image ID: {new_id}. Available at: {location}"
-        )
+        msg = f"{name} succeeded. New image ID: {new_id}."
         return msg, {new_id: location}
 
     return f"Tool execution error:\nUnknown tool: {name!r}", {}
