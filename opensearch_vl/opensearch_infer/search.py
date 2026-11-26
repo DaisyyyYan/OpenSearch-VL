@@ -35,6 +35,7 @@ from typing import Callable, Dict, List, Optional
 import requests
 
 from . import config
+from . import local_ocr
 from . import offline_kb
 
 
@@ -60,7 +61,12 @@ def layout_parsing(
     use_doc_orientation_classify: bool = False,
     use_doc_unwarping: bool = False,
 ) -> Dict:
-    """POST a local image to the configured layout-parsing endpoint."""
+    """OCR a local image (local RapidOCR by default, or the configured endpoint)."""
+
+    # LAYOUT_BACKEND=local (default) uses the offline OCR; LAYOUT_BACKEND=api
+    # restores the original behaviour of calling LAYOUT_PARSING_API_URL.
+    if os.environ.get("LAYOUT_BACKEND", "local").strip().lower() != "api":
+        return local_ocr.layout_parsing(file_path)
 
     if not config.LAYOUT_PARSING_API_URL:
         return {

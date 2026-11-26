@@ -319,6 +319,7 @@ class AnthropicRunner(BaseRunner):
             try:
                 self.load()
             except Exception as exc:
+                logger.error("Anthropic runner could not start: %s", exc)
                 return _empty_response(self.display_name, str(exc))
 
         per_turn_cap = int(self.spec.extra.get("max_output_tokens", "4096"))
@@ -344,6 +345,7 @@ class AnthropicRunner(BaseRunner):
 
         if response_json.get("type") == "error":
             error = response_json.get("error", {}) or {}
+            logger.error("Anthropic API error: %s", error)
             return _empty_response(
                 self.display_name, error.get("message", "Unknown error")
             )
