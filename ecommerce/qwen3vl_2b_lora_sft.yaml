@@ -1,0 +1,58 @@
+# LoRA SFT of Qwen3-VL-2B-Instruct on the e-commerce customer-service trajectories.
+# Run from the LLaMA-Factory folder on the GPU machine:
+#   llamafactory-cli train /path/to/qwen3vl_2b_lora_sft.yaml
+# DATA_DIR below must be the folder produced by ecommerce/to_sft.py (contains dataset_info.json and images/).
+
+### model
+model_name_or_path: Qwen/Qwen3-VL-2B-Instruct
+trust_remote_code: true
+image_max_pixels: 589824        # 768x768; our screenshots/labels are smaller, this only caps outliers
+video_max_pixels: 16384
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+lora_target: all
+freeze_vision_tower: true
+freeze_multi_modal_projector: true
+freeze_language_model: false
+
+### dataset
+dataset_dir: /workspace/sft         # <- folder from to_sft.py
+dataset: ecom_sft_train
+eval_dataset: ecom_sft_val
+template: qwen3_vl
+cutoff_len: 12288                   # longest trajectory is ~11k tokens by the chars/3 estimate (validate_trajectories.py)
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 4
+
+### output
+output_dir: /workspace/outputs/qwen3vl2b_ecom_lora
+logging_steps: 10
+save_steps: 200
+plot_loss: true
+overwrite_output_dir: true
+save_only_model: false
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16     # effective batch size 16
+learning_rate: 1.0e-4
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+bf16: true
+gradient_checkpointing: true
+ddp_timeout: 180000000
+seed: 42
+
+### eval (validation split only; the sealed test set is never used here)
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 100
